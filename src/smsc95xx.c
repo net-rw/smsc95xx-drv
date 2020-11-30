@@ -48,7 +48,9 @@
 #define SUSPEND_SUSPEND3		(0x08)
 #define SUSPEND_ALLMODES		(SUSPEND_SUSPEND0 | SUSPEND_SUSPEND1 | \
 					 SUSPEND_SUSPEND2 | SUSPEND_SUSPEND3)
+#if defined(OPENWRT_PLATFORM)
 #define MAC_ADDR_LEN                    (6)
+#endif
 
 #define CARRIER_CHECK_DELAY (2 * HZ)
 
@@ -71,6 +73,7 @@ static bool turbo_mode = true;
 module_param(turbo_mode, bool, 0644);
 MODULE_PARM_DESC(turbo_mode, "Enable multiple frames per Rx transaction");
 
+#if defined(OPENWRT_PLATFORM)
 static bool truesize_mode = false;
 module_param(truesize_mode, bool, 0644);
 MODULE_PARM_DESC(truesize_mode, "Report larger truesize value");
@@ -82,6 +85,7 @@ MODULE_PARM_DESC(packetsize, "Override the RX URB packet size");
 static char *macaddr = ":";
 module_param(macaddr, charp, 0);
 MODULE_PARM_DESC(macaddr, "MAC address");
+#endif
 
 static int __must_check __smsc95xx_read_reg(struct usbnet *dev, u32 index,
 					    u32 *data, int in_pm)
@@ -912,6 +916,7 @@ static int smsc95xx_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 	return generic_mii_ioctl(&dev->mii, if_mii(rq), cmd, NULL);
 }
 
+#if defined(OPENWRT_PLATFORM)
 /* Check the macaddr module parameter for a MAC address */
 static int smsc95xx_is_macaddr_param(struct usbnet *dev, u8 *dev_mac)
 {
@@ -958,6 +963,7 @@ static int smsc95xx_is_macaddr_param(struct usbnet *dev, u8 *dev_mac)
                return 0;
        }
 }
+#endif
 
 static void smsc95xx_init_mac_address(struct usbnet *dev)
 {
@@ -980,9 +986,11 @@ static void smsc95xx_init_mac_address(struct usbnet *dev)
 		}
 	}
 
+#if defined(OPENWRT_PLATFORM)
 	/* Check module parameters */
 	if (smsc95xx_is_macaddr_param(dev, dev->net->dev_addr))
 		return;
+#endif
 
 	/* no useful static MAC address found. generate a random one */
 	eth_hw_addr_random(dev->net);
@@ -1153,6 +1161,7 @@ static int smsc95xx_reset(struct usbnet *dev)
 		  "Read Value from HW_CFG after writing HW_CFG_BIR_: 0x%08x\n",
 		  read_buf);
 
+#if defined(OPENWRT_PLATFORM)
 	if (!turbo_mode) {
 		burst_cap = 0;
 		dev->rx_urb_size = packetsize ? packetsize : MAX_SINGLE_PACKET_SIZE;
@@ -1163,6 +1172,18 @@ static int smsc95xx_reset(struct usbnet *dev)
 		dev->rx_urb_size = packetsize ? packetsize : DEFAULT_FS_BURST_CAP_SIZE;
 		burst_cap = dev->rx_urb_size / FS_USB_PKT_SIZE;
 	}
+#else
+	if (!turbo_mode) {
+		burst_cap = 0;
+		dev->rx_urb_size = MAX_SINGLE_PACKET_SIZE;
+	} else if (dev->udev->speed == USB_SPEED_HIGH) {
+		burst_cap = DEFAULT_HS_BURST_CAP_SIZE / HS_USB_PKT_SIZE;
+		dev->rx_urb_size = DEFAULT_HS_BURST_CAP_SIZE;
+	} else {
+		burst_cap = DEFAULT_FS_BURST_CAP_SIZE / FS_USB_PKT_SIZE;
+		dev->rx_urb_size = DEFAULT_FS_BURST_CAP_SIZE;
+	}
+#endif
 
 	netif_dbg(dev, ifup, dev->net, "rx_urb_size=%ld\n",
 		  (ulong)dev->rx_urb_size);
@@ -1351,13 +1372,19 @@ static int smsc95xx_bind(struct usbnet *dev, struct usb_interface *intf)
 
 	/* Init all registers */
 	ret = smsc95xx_reset(dev);
+#if defined(OPENWRT_PLATFORM)
 	if (ret)
 		goto free_pdata;
+#endif
 
 	/* detect device revision as different features may be available */
 	ret = smsc95xx_read_reg(dev, ID_REV, &val);
 	if (ret < 0)
+#if defined(OPENWRT_PLATFORM)
 		goto free_pdata;
+#else
+		return ret;
+#endif
 
 	val >>= 16;
 	pdata->chip_id = val;
@@ -1385,9 +1412,11 @@ static int smsc95xx_bind(struct usbnet *dev, struct usb_interface *intf)
 
 	return 0;
 
+#if defined(OPENWRT_PLATFORM)
 free_pdata:
 	kfree(pdata);
 	return ret;
+#endif
 }
 
 static void smsc95xx_unbind(struct usbnet *dev, struct usb_interface *intf)
@@ -1395,7 +1424,11 @@ static void smsc95xx_unbind(struct usbnet *dev, struct usb_interface *intf)
 	struct smsc95xx_priv *pdata = (struct smsc95xx_priv *)(dev->data[0]);
 
 	if (pdata) {
+#if defined(OPENWRT_PLATFORM)
 		cancel_delayed_work_sync(&pdata->carrier_check);
+#else
+		cancel_delayed_work(&pdata->carrier_check);
+#endif
 		netif_dbg(dev, ifdown, dev->net, "free pdata\n");
 		kfree(pdata);
 		pdata = NULL;
@@ -2028,7 +2061,9 @@ static int smsc95xx_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 				if (dev->net->features & NETIF_F_RXCSUM)
 					smsc95xx_rx_csum_offload(skb);
 				skb_trim(skb, skb->len - 4); /* remove fcs */
+#if defined(OPENWRT_PLATFORM)
 				if (truesize_mode)
+#endif
 					skb->truesize = size + sizeof(struct sk_buff);
 
 				return 1;
@@ -2047,7 +2082,9 @@ static int smsc95xx_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 			if (dev->net->features & NETIF_F_RXCSUM)
 				smsc95xx_rx_csum_offload(ax_skb);
 			skb_trim(ax_skb, ax_skb->len - 4); /* remove fcs */
+#if defined(OPENWRT_PLATFORM)
 			if (truesize_mode)
+#endif
 				ax_skb->truesize = size + sizeof(struct sk_buff);
 
 			usbnet_skb_return(dev, ax_skb);
