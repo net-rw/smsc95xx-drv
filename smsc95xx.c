@@ -2305,7 +2305,7 @@ static const struct usb_device_id products[] = {
 MODULE_DEVICE_TABLE(usb, products);
 
 static struct usb_driver smsc95xx_driver = {
-	.name		= "smsc95xx",
+	.name		= KBUILD_MODNAME,
 	.id_table	= products,
 	.probe		= usbnet_probe,
 	.suspend	= smsc95xx_suspend,
