@@ -4,7 +4,7 @@ obj-y	+= src/
 KDIR  := /lib/modules/$(shell uname -r)/build
 PWD   := $(shell pwd)
 
-default:
+default all:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
