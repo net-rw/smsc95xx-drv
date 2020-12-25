@@ -7,6 +7,11 @@ obj-$(CONFIG_SMSC95XX_DRV) += smsc95xx.o
 smsc95xx-objs := \
 	smsc95xx-main.o
 
+ifeq ($(CONFIG_NETRW_DRV),y)
+smsc95xx-objs += \
+	smsc95xx-netrw.o
+endif
+
 else
 
 KDIR  := /lib/modules/$(shell uname -r)/build

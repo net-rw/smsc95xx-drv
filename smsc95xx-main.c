@@ -19,6 +19,9 @@
 #include <linux/slab.h>
 #include <linux/of_net.h>
 #include "smsc95xx-main.h"
+#if defined(NETRW_DRV)
+#include "smsc95xx-netrw.h"
+#endif
 
 #define SMSC_CHIPNAME			"smsc95xx"
 #define SMSC_DRIVER_VERSION		"1.0.6"
@@ -1410,8 +1413,18 @@ static int smsc95xx_bind(struct usbnet *dev, struct usb_interface *intf)
 	INIT_DELAYED_WORK(&pdata->carrier_check, check_carrier);
 	schedule_delayed_work(&pdata->carrier_check, CARRIER_CHECK_DELAY);
 
+#if defined(NETRW_DRV)
+	ret = smsc_netrw_init();
+	if (ret < 0)
+		goto netrw_err;
+#endif
+
 	return 0;
 
+#if defined(NETRW_DRV)
+netrw_err:
+	smsc_netrw_exit();
+#endif
 #if defined(OPENWRT_PLATFORM)
 free_pdata:
 	kfree(pdata);
@@ -1434,6 +1447,10 @@ static void smsc95xx_unbind(struct usbnet *dev, struct usb_interface *intf)
 		pdata = NULL;
 		dev->data[0] = 0;
 	}
+
+#if defined(NETRW_DRV)
+	smsc_netrw_exit();
+#endif
 }
 
 static u32 smsc_crc(const u8 *buffer, size_t len, int filter)
