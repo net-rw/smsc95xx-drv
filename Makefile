@@ -2,7 +2,10 @@
 
 ifneq ($(KERNELRELEASE),)
 
-obj-$(CONFIG_SMSC95XX_DRV)	+= smsc95xx.o
+obj-$(CONFIG_SMSC95XX_DRV) += smsc95xx.o
+
+smsc95xx-objs := \
+	smsc95xx-main.o
 
 else
 

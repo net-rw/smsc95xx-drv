@@ -18,7 +18,7 @@
 #include <linux/usb/usbnet.h>
 #include <linux/slab.h>
 #include <linux/of_net.h>
-#include "smsc95xx.h"
+#include "smsc95xx-main.h"
 
 #define SMSC_CHIPNAME			"smsc95xx"
 #define SMSC_DRIVER_VERSION		"1.0.6"
