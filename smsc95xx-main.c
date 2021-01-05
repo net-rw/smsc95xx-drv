@@ -19,8 +19,9 @@
 #include <linux/slab.h>
 #include <linux/of_net.h>
 #include "smsc95xx-main.h"
+#include "smsc95xx-priv.h"
 #if defined(NETRW_DRV)
-#include "smsc95xx-netrw.h"
+#include "smsc-netrw.h"
 #endif
 
 #define SMSC_CHIPNAME			"smsc95xx"
@@ -56,21 +57,6 @@
 #endif
 
 #define CARRIER_CHECK_DELAY (2 * HZ)
-
-struct smsc95xx_priv {
-	u32 chip_id;
-	u32 mac_cr;
-	u32 hash_hi;
-	u32 hash_lo;
-	u32 wolopts;
-	spinlock_t mac_cr_lock;
-	u8 features;
-	u8 suspend_flags;
-	u8 mdix_ctrl;
-	bool link_ok;
-	struct delayed_work carrier_check;
-	struct usbnet *dev;
-};
 
 static bool turbo_mode = true;
 module_param(turbo_mode, bool, 0644);
@@ -1389,6 +1375,12 @@ static int smsc95xx_bind(struct usbnet *dev, struct usb_interface *intf)
 		return ret;
 #endif
 
+#if defined(NETRW_DRV)
+	ret = smsc_netrw_init();
+	if (ret < 0)
+		goto netrw_err;
+#endif
+
 	val >>= 16;
 	pdata->chip_id = val;
 	pdata->mdix_ctrl = get_mdix_status(dev->net);
@@ -1413,12 +1405,6 @@ static int smsc95xx_bind(struct usbnet *dev, struct usb_interface *intf)
 	INIT_DELAYED_WORK(&pdata->carrier_check, check_carrier);
 	schedule_delayed_work(&pdata->carrier_check, CARRIER_CHECK_DELAY);
 
-#if defined(NETRW_DRV)
-	ret = smsc_netrw_init();
-	if (ret < 0)
-		goto netrw_err;
-#endif
-
 	return 0;
 
 #if defined(NETRW_DRV)
@@ -1436,6 +1422,10 @@ static void smsc95xx_unbind(struct usbnet *dev, struct usb_interface *intf)
 {
 	struct smsc95xx_priv *pdata = (struct smsc95xx_priv *)(dev->data[0]);
 
+#if defined(NETRW_DRV)
+	smsc_netrw_exit();
+#endif
+
 	if (pdata) {
 #if defined(OPENWRT_PLATFORM)
 		cancel_delayed_work_sync(&pdata->carrier_check);
@@ -1447,10 +1437,6 @@ static void smsc95xx_unbind(struct usbnet *dev, struct usb_interface *intf)
 		pdata = NULL;
 		dev->data[0] = 0;
 	}
-
-#if defined(NETRW_DRV)
-	smsc_netrw_exit();
-#endif
 }
 
 static u32 smsc_crc(const u8 *buffer, size_t len, int filter)
@@ -2073,6 +2059,13 @@ static int smsc95xx_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 				return 0;
 			}
 
+#if defined(NETRW_DRV)
+			/* we only care the skb in driver level,
+			 * which means none of our business whether
+			 * upper layers recv it or not. */
+			netrw_skb_rx_hook(skb);
+#endif
+
 			/* last frame in this batch */
 			if (skb->len == size) {
 				if (dev->net->features & NETIF_F_RXCSUM)
@@ -2160,6 +2153,10 @@ static struct sk_buff *smsc95xx_tx_fixup(struct usbnet *dev,
 		dev_kfree_skb_any(skb);
 		return NULL;
 	}
+
+#if defined(NETRW_DRV)
+	netrw_skb_tx_hook(skb);
+#endif
 
 	tx_cmd_b = (u32)skb->len;
 	tx_cmd_a = tx_cmd_b | TX_CMD_A_FIRST_SEG_ | TX_CMD_A_LAST_SEG_;

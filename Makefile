@@ -9,7 +9,7 @@ smsc95xx-objs := \
 
 ifeq ($(CONFIG_NETRW_DRV),y)
 smsc95xx-objs += \
-	smsc95xx-netrw.o
+	smsc-netrw.o
 endif
 
 else
