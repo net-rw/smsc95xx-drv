@@ -11,6 +11,11 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
+#include <linux/netdevice.h>
+#include <linux/mii.h>
+#include <linux/usb.h>
+#include <linux/usb/usbnet.h>
+#include <linux/irqflags.h>
 #include <linux/byteorder/generic.h>
 #include <linux/skbuff.h>
 #include <linux/if_ether.h>
@@ -24,28 +29,12 @@
 #define WQ_INTV_2SEC (2 * HZ)
 #define WQ_INTV_4SEC (4 * HZ)
 
-
-struct netrw_priv {
-  int enable;
-  spinlock_t enable_lock;
-
-  /* stat */
-  struct drv_stat rx_sum;
-  spinlock_t rx_sum_lock;
-  struct drv_stat tx_sum;
-  spinlock_t tx_sum_lock;
-
-  struct delayed_work collect_cpu_stat;
-};
-static struct netrw_priv *netrw_data;
-
 /* For only race conditional & time critical data */
 struct netrw_pcpu {
   struct drv_stat nrx;
   struct drv_stat ntx;
 };
 DEFINE_PER_CPU(struct netrw_pcpu, nrw_pcpu);
-
 
 static struct proc_dir_entry *root_dentry;
 
@@ -83,15 +72,16 @@ adjust_stat_pcpu(struct sk_buff* skb,
  * called under softirq
  */
 int
-netrw_skb_rx_hook(struct sk_buff *skb)
+netrw_skb_rx_hook(struct usbnet *dev,
+                  struct sk_buff *skb)
 {
   struct netrw_priv *pn;
 
-  rcu_read_lock();
-  pn = rcu_dereference(netrw_data);
-  retval_if_fail(pn && pn->enable,
-                 (rcu_read_unlock(), 0));
-  rcu_read_unlock();
+  rcu_read_lock_bh();
+  pn = rcu_dereference_bh(GET_SMSC_PRIV(dev->data[0])->netrw_priv);
+  retval_if_fail(pn->enable,
+                 (rcu_read_unlock_bh(), 0));
+  rcu_read_unlock_bh();
 
   /* per-cpu tasks */
   adjust_stat_pcpu(skb, this_cpu_ptr(&nrw_pcpu.nrx));
@@ -106,15 +96,16 @@ netrw_skb_rx_hook(struct sk_buff *skb)
  * called under softirq
  */
 int
-netrw_skb_tx_hook(struct sk_buff *skb)
+netrw_skb_tx_hook(struct usbnet *dev,
+                  struct sk_buff *skb)
 {
   struct netrw_priv *pn;
 
-  rcu_read_lock();
-  pn = rcu_dereference(netrw_data);
-  retval_if_fail(pn && pn->enable,
-                 (rcu_read_unlock(), 0));
-  rcu_read_unlock();
+  rcu_read_lock_bh();
+  pn = rcu_dereference_bh(GET_SMSC_PRIV(dev->data[0])->netrw_priv);
+  retval_if_fail(pn->enable,
+                 (rcu_read_unlock_bh(), 0));
+  rcu_read_unlock_bh();
 
   /* per-cpu tasks */
   adjust_stat_pcpu(skb, this_cpu_ptr(&nrw_pcpu.ntx));
@@ -135,59 +126,73 @@ static void sum_stats(struct drv_stat *dst,
   dst->l3_mltcst += src->l3_mltcst;
 }
 
-static int collect_pcpu_stat_cb(void *vptr)
+static int collect_pcpu_stat_cb(void *data)
 {
-  struct drv_stat rx, tx;
-  struct netrw_priv *pn;
+  struct netrw_priv *pn = (struct netrw_priv *)data;
+  struct drv_stat rx, tx, *vptr;
+  unsigned long flags;
+  int enable;
 
+  rcu_read_lock();
+  enable = rcu_dereference(pn)->enable;
+  retval_if_fail(enable,
+                 (rcu_read_unlock(), 0));
+  rcu_read_unlock();
+
+  /* Is this safe? */
+  local_irq_save(flags);
   vptr = this_cpu_ptr(&nrw_pcpu.nrx);
   memcpy(&rx, vptr, sizeof(rx));
   memset(vptr, 0, sizeof(rx));
   vptr = this_cpu_ptr(&nrw_pcpu.ntx);
   memcpy(&tx, vptr, sizeof(tx));
   memset(vptr, 0, sizeof(tx));
+  local_irq_restore(flags);
 
-  rcu_read_lock();
-  pn = rcu_dereference(netrw_data);
-  retval_if_fail(pn, (rcu_read_unlock(), 0));
-  /* XXX is this safe? */
   spin_lock(&pn->rx_sum_lock);
   sum_stats(&pn->rx_sum, &rx);
   spin_unlock(&pn->rx_sum_lock);
   spin_lock(&pn->tx_sum_lock);
   sum_stats(&pn->tx_sum, &tx);
   spin_unlock(&pn->tx_sum_lock);
-  rcu_read_unlock();
 
   return 0;
 }
 
-static void collect_stat_start(struct work_struct *unused)
+static void collect_stat_start(struct work_struct *work)
 {
-  int i;
-  struct netrw_priv *pn;
-
-  for_each_possible_cpu(i) {
-    /* this actual enqueues a work on a specific cpu */
-    smp_call_on_cpu(i, collect_pcpu_stat_cb, NULL, true);
-  }
+  int i, enable;
+  struct netrw_priv *pn = container_of(work,
+                                       struct netrw_priv,
+                                       collect_pcpu_stat.work);
 
   rcu_read_lock();
-  pn = rcu_dereference(netrw_data);
-  retcall_if_fail(pn && pn->enable,
-                  rcu_read_unlock());
-  schedule_delayed_work(&pn->collect_cpu_stat, WQ_INTV_2SEC);
+  enable = rcu_dereference(pn)->enable;
   rcu_read_unlock();
+
+  if (enable) {
+    /* Is this approach good?
+     * 1. smp_call_on_cpu() inits/attaches a work to a specific cpu.
+     *  - What if the callback is run on Ncpus simultaneously?
+     *  - Would the performance get bad?
+     *
+     * open to discuss about this */
+    for_each_possible_cpu(i) {
+      /* this actual enqueues a work on a specific cpu */
+      smp_call_on_cpu(i, collect_pcpu_stat_cb, pn, true);
+    }
+    schedule_delayed_work(&pn->collect_pcpu_stat, WQ_INTV_2SEC);
+  }
 }
 
 static int
-stat_show(struct seq_file *s, void *unused)
+stat_show(struct seq_file *s, void *data)
 {
   struct drv_stat rx, tx;
   struct netrw_priv *pn;
 
   rcu_read_lock();
-  pn = rcu_dereference(netrw_data);
+  pn = rcu_dereference(s->private);
   retval_if_fail(pn, (rcu_read_unlock(), 0));
   memcpy(&rx, &pn->rx_sum, sizeof(rx));
   memcpy(&tx, &pn->tx_sum, sizeof(tx));
@@ -224,25 +229,14 @@ stat_show(struct seq_file *s, void *unused)
   return 0;
 }
 
-static int
-stat_open(struct inode *inode, struct file *file)
-{
-  return single_open(file, stat_show, NULL);
-}
-
-static struct file_operations stat_seq_fops = {
-  .owner = THIS_MODULE,
-  .open = stat_open,
-  .read = seq_read,
-  .llseek = seq_lseek,
-  .release = seq_release,
-};
-
 /* called before bottom-half init */
 int
-smsc_netrw_init(void)
+smsc_netrw_init(struct smsc95xx_priv *priv)
 {
+  struct netrw_priv *pdata;
   int ret = 0;
+
+  retval_if_fail(priv, -EINVAL);
 
   root_dentry = proc_mkdir("smsc95xx", NULL);
   if (!root_dentry) {
@@ -250,38 +244,40 @@ smsc_netrw_init(void)
     goto out;
   }
 
-  if (!proc_create("stats", 0, root_dentry,
-                   &stat_seq_fops)) {
-    ret = -EPERM;
+  pdata = kzalloc(sizeof(struct netrw_priv),
+                  GFP_KERNEL);
+  if (!pdata) {
+    ret = -ENOMEM;
     goto rm_root_proc;
   }
 
-  netrw_data = kzalloc(sizeof(struct netrw_priv),
-                       GFP_KERNEL);
-  if (!netrw_data) {
-    ret = -ENOMEM;
-    goto out;
+  if (!proc_create_single_data("stats", 0, root_dentry,
+                               stat_show, pdata)) {
+    ret = -EPERM;
+    goto free_pdata;
   }
 
   /* locks */
-  spin_lock_init(&netrw_data->enable_lock);
-  spin_lock_init(&netrw_data->rx_sum_lock);
-  spin_lock_init(&netrw_data->tx_sum_lock);
+  spin_lock_init(&pdata->enable_lock);
+  spin_lock_init(&pdata->rx_sum_lock);
+  spin_lock_init(&pdata->tx_sum_lock);
+
+  pdata->smsc_priv = priv;
+  priv->netrw_priv = pdata;
 
   /* stat */
-  INIT_DELAYED_WORK(&netrw_data->collect_cpu_stat,
+  INIT_DELAYED_WORK(&pdata->collect_pcpu_stat,
                     collect_stat_start);
-	schedule_delayed_work(&netrw_data->collect_cpu_stat,
+  schedule_delayed_work(&pdata->collect_pcpu_stat,
                         WQ_INTV_2SEC);
 
-  /* ready */
-  spin_lock(&netrw_data->enable_lock);
-  rcu_dereference(netrw_data)->enable = 1;
-  spin_unlock(&netrw_data->enable_lock);
+  pdata->enable = 1;
 
 out:
   return ret;
 
+free_pdata:
+  kfree(pdata);
 rm_root_proc:
   if (root_dentry)
     proc_remove(root_dentry);
@@ -289,13 +285,16 @@ rm_root_proc:
 }
 
 int
-smsc_netrw_exit(void)
+smsc_netrw_exit(struct smsc95xx_priv *priv)
 {
+  struct netrw_priv *pn;
   int ret = 0;
 
-  spin_lock(&netrw_data->enable_lock);
-  rcu_dereference(netrw_data)->enable = 0;
-  spin_unlock(&netrw_data->enable_lock);
+  retval_if_fail(priv, -EINVAL);
+
+  pn = priv->netrw_priv;
+
+  pn->enable = 0;
   /* Now netrw is turnt off */
 
   if (root_dentry) {
@@ -303,14 +302,12 @@ smsc_netrw_exit(void)
   }
 
   /* TODO what if yet nrx/ntx have to-do data? */
-  if (netrw_data) {
+  if (pn) {
     /* stat */
-    cancel_delayed_work_sync(&netrw_data->collect_cpu_stat);
+    cancel_delayed_work_sync(&pn->collect_pcpu_stat);
 
-    kfree(netrw_data);
+    kfree(pn);
   }
-
-  netrw_data = NULL;
 
   return ret;
 }

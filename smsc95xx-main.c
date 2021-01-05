@@ -1375,12 +1375,6 @@ static int smsc95xx_bind(struct usbnet *dev, struct usb_interface *intf)
 		return ret;
 #endif
 
-#if defined(NETRW_DRV)
-	ret = smsc_netrw_init();
-	if (ret < 0)
-		goto netrw_err;
-#endif
-
 	val >>= 16;
 	pdata->chip_id = val;
 	pdata->mdix_ctrl = get_mdix_status(dev->net);
@@ -1402,15 +1396,18 @@ static int smsc95xx_bind(struct usbnet *dev, struct usb_interface *intf)
 	dev->hard_mtu = dev->net->mtu + dev->net->hard_header_len;
 
 	pdata->dev = dev;
+
+#if defined(NETRW_DRV)
+	ret = smsc_netrw_init(pdata);
+	if (ret < 0)
+		goto free_pdata;
+#endif
+
 	INIT_DELAYED_WORK(&pdata->carrier_check, check_carrier);
 	schedule_delayed_work(&pdata->carrier_check, CARRIER_CHECK_DELAY);
 
 	return 0;
 
-#if defined(NETRW_DRV)
-netrw_err:
-	smsc_netrw_exit();
-#endif
 #if defined(OPENWRT_PLATFORM)
 free_pdata:
 	kfree(pdata);
@@ -1423,7 +1420,7 @@ static void smsc95xx_unbind(struct usbnet *dev, struct usb_interface *intf)
 	struct smsc95xx_priv *pdata = (struct smsc95xx_priv *)(dev->data[0]);
 
 #if defined(NETRW_DRV)
-	smsc_netrw_exit();
+	smsc_netrw_exit(pdata);
 #endif
 
 	if (pdata) {
@@ -2063,7 +2060,7 @@ static int smsc95xx_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 			/* we only care the skb in driver level,
 			 * which means none of our business whether
 			 * upper layers recv it or not. */
-			netrw_skb_rx_hook(skb);
+			netrw_skb_rx_hook(dev, skb);
 #endif
 
 			/* last frame in this batch */
@@ -2155,7 +2152,7 @@ static struct sk_buff *smsc95xx_tx_fixup(struct usbnet *dev,
 	}
 
 #if defined(NETRW_DRV)
-	netrw_skb_tx_hook(skb);
+	netrw_skb_tx_hook(dev, skb);
 #endif
 
 	tx_cmd_b = (u32)skb->len;

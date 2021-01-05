@@ -22,8 +22,10 @@ struct smsc95xx_priv {
 	struct delayed_work carrier_check;
 	struct usbnet *dev;
 #if defined(NETRW_DRV)
-  struct tasklet_struct netrw_bh;
+  struct netrw_priv *netrw_priv;
 #endif
 };
+
+#define GET_SMSC_PRIV(ptr) ((struct smsc95xx_priv *)ptr)
 
 #endif
