@@ -24,6 +24,8 @@ struct netrw_priv {
 
   struct smsc95xx_priv *smsc_priv;
 
+  struct proc_dir_entry *root_dentry;
+
   /* stat */
   struct drv_stat rx_sum;
   spinlock_t rx_sum_lock;

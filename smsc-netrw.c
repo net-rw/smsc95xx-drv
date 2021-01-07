@@ -29,14 +29,11 @@
 #define WQ_INTV_2SEC (2 * HZ)
 #define WQ_INTV_4SEC (4 * HZ)
 
-/* For only race conditional & time critical data */
 struct netrw_pcpu {
   struct drv_stat nrx;
   struct drv_stat ntx;
 };
 DEFINE_PER_CPU(struct netrw_pcpu, nrw_pcpu);
-
-static struct proc_dir_entry *root_dentry;
 
 /* called under per-cpu */
 static void inline
@@ -185,49 +182,7 @@ static void collect_stat_start(struct work_struct *work)
   }
 }
 
-static int
-stat_show(struct seq_file *s, void *data)
-{
-  struct drv_stat rx, tx;
-  struct netrw_priv *pn;
-
-  rcu_read_lock();
-  pn = rcu_dereference(s->private);
-  retval_if_fail(pn, (rcu_read_unlock(), 0));
-  memcpy(&rx, &pn->rx_sum, sizeof(rx));
-  memcpy(&tx, &pn->tx_sum, sizeof(tx));
-  rcu_read_unlock();
-
-  /* tx */
-  seq_printf(s, ".-* Transmit\n"
-                "|  ARP packets  : (%u)\n"
-                "|\n"
-                "|  L3 Unicasts  : (%llu)\n"
-                "|  L3 Broadcasts: (%llu)\n"
-                "|  L3 Multicasts: (%llu)\n"
-                ":\n"
-                "'\n\n",
-                tx.l2_arp,
-                tx.l3_unicst,
-                tx.l3_brdcst,
-                tx.l3_mltcst);
-
-  /* rx */
-  seq_printf(s, ".-* Receive\n"
-                "|  ARP packets  : (%u)\n"
-                "|\n"
-                "|  L3 Unicasts  : (%llu)\n"
-                "|  L3 Broadcasts: (%llu)\n"
-                "|  L3 Multicasts: (%llu)\n"
-                ":\n"
-                "'\n",
-                rx.l2_arp,
-                rx.l3_unicst,
-                rx.l3_brdcst,
-                rx.l3_mltcst);
-
-  return 0;
-}
+#include "smsc-netrw-proc.c"
 
 /* called before bottom-half init */
 int
@@ -238,23 +193,21 @@ smsc_netrw_init(struct smsc95xx_priv *priv)
 
   retval_if_fail(priv, -EINVAL);
 
-  root_dentry = proc_mkdir("smsc95xx", NULL);
-  if (!root_dentry) {
-    ret = -EPERM;
+  pdata = vzalloc(sizeof(struct netrw_priv));
+  if (!pdata) {
+    ret = -ENOMEM;
     goto out;
   }
 
-  pdata = kzalloc(sizeof(struct netrw_priv),
-                  GFP_KERNEL);
-  if (!pdata) {
-    ret = -ENOMEM;
-    goto rm_root_proc;
-  }
-
-  if (!proc_create_single_data("stats", 0, root_dentry,
-                               stat_show, pdata)) {
+  pdata->root_dentry = proc_mkdir("smsc95xx", NULL);
+  if (!pdata->root_dentry) {
     ret = -EPERM;
     goto free_pdata;
+  }
+
+  ret = netrw_proc_init(pdata);
+  if (ret != 0) {
+    goto rm_root_proc;
   }
 
   /* locks */
@@ -271,16 +224,18 @@ smsc_netrw_init(struct smsc95xx_priv *priv)
   schedule_delayed_work(&pdata->collect_pcpu_stat,
                         WQ_INTV_2SEC);
 
-  pdata->enable = 1;
+  /* default is off */
+  pdata->enable = 0;
 
 out:
   return ret;
 
-free_pdata:
-  kfree(pdata);
 rm_root_proc:
-  if (root_dentry)
-    proc_remove(root_dentry);
+  if (pdata->root_dentry)
+    proc_remove(pdata->root_dentry);
+free_pdata:
+  vfree(pdata);
+
   goto out;
 }
 
@@ -297,17 +252,16 @@ smsc_netrw_exit(struct smsc95xx_priv *priv)
   pn->enable = 0;
   /* Now netrw is turnt off */
 
-  if (root_dentry) {
-    proc_remove(root_dentry);
+  if (pn->root_dentry) {
+    proc_remove(pn->root_dentry);
   }
 
   /* TODO what if yet nrx/ntx have to-do data? */
-  if (pn) {
-    /* stat */
-    cancel_delayed_work_sync(&pn->collect_pcpu_stat);
+  /* stat */
+  cancel_delayed_work_sync(&pn->collect_pcpu_stat);
 
-    kfree(pn);
-  }
+  /* done */
+  vfree(pn);
 
   return ret;
 }
