@@ -50,11 +50,11 @@ enable_proc_write(struct file *file,
 static int
 enable_proc_show(struct seq_file *s, void *unused)
 {
-  struct netrw_priv *pn;
+  struct netrw_priv *pn = (struct netrw_priv *)s->private;
   int enable;
 
   rcu_read_lock();
-  enable = rcu_dereference(s->private)->enable;
+  enable = rcu_dereference(pn)->enable;
   rcu_read_unlock();
 
   seq_printf(s, "%d\n", enable);
