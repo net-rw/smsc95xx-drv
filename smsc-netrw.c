@@ -221,8 +221,6 @@ smsc_netrw_init(struct smsc95xx_priv *priv)
   /* stat */
   INIT_DELAYED_WORK(&pdata->collect_pcpu_stat,
                     collect_stat_start);
-  schedule_delayed_work(&pdata->collect_pcpu_stat,
-                        WQ_INTV_2SEC);
 
   /* default is off */
   pdata->enable = 0;
