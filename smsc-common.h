@@ -8,6 +8,12 @@
 #ifndef _SMSC_COMMON_H
 #define _SMSC_COMMON_H
 
+#include <linux/types.h>
+#include <linux/spinlock.h>
+#include <linux/workqueue.h>
+
+#include "smsc95xx-priv.h"
+
 /* -- stat -- */
 struct drv_stat {
   u64 l3_unicst;

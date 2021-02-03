@@ -9,7 +9,8 @@ smsc95xx-objs := \
 
 ifeq ($(CONFIG_NETRW_DRV),y)
 smsc95xx-objs += \
-	smsc-netrw.o
+	smsc-netrw.o \
+	smsc-pktrace.o
 endif
 
 else

@@ -8,6 +8,11 @@
 #ifndef _SMSC95XX_PRIV_H
 #define _SMSC95XX_PRIV_H
 
+#include <linux/netdevice.h>
+#include <linux/mii.h>
+#include <linux/usb.h>
+#include <linux/usb/usbnet.h>
+
 struct smsc95xx_priv {
 	u32 chip_id;
 	u32 mac_cr;

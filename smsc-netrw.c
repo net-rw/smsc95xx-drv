@@ -5,16 +5,10 @@
  * This software is distributed under the terms of the BSD or GPL license.
  */
 
-#include <linux/types.h>
 #include <linux/percpu.h>
 #include <linux/string.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <linux/spinlock.h>
-#include <linux/netdevice.h>
-#include <linux/mii.h>
-#include <linux/usb.h>
-#include <linux/usb/usbnet.h>
 #include <linux/irqflags.h>
 #include <linux/byteorder/generic.h>
 #include <linux/skbuff.h>
@@ -24,6 +18,7 @@
 #include "smsc-netrw.h"
 #include "smsc-common.h"
 #include "smsc-util.h"
+#include "smsc-pktrace.h"
 
 #define WQ_INTV_1SEC (1 * HZ)
 #define WQ_INTV_2SEC (2 * HZ)
@@ -210,24 +205,27 @@ smsc_netrw_init(struct smsc95xx_priv *priv)
     goto rm_root_proc;
   }
 
+  /* -- private members -- */
+  pdata->smsc_priv = priv;
+  priv->netrw_priv = pdata;
   /* locks */
   spin_lock_init(&pdata->enable_lock);
   spin_lock_init(&pdata->rx_sum_lock);
   spin_lock_init(&pdata->tx_sum_lock);
-
-  pdata->smsc_priv = priv;
-  priv->netrw_priv = pdata;
-
-  /* stat */
+  pdata->enable = 0; /* default is off */
+  /* stat workqueue */
   INIT_DELAYED_WORK(&pdata->collect_pcpu_stat,
                     collect_stat_start);
 
-  /* default is off */
-  pdata->enable = 0;
+  /* -- register ext plugins -- */
+  ret = smsc_pktrace_register(pdata);
+  if (ret != 0)
+    goto err_init_pktrace;
 
 out:
   return ret;
 
+err_init_pktrace:
 rm_root_proc:
   if (pdata->root_dentry)
     proc_remove(pdata->root_dentry);
@@ -257,6 +255,8 @@ smsc_netrw_exit(struct smsc95xx_priv *priv)
   /* TODO what if yet nrx/ntx have to-do data? */
   /* stat */
   cancel_delayed_work_sync(&pn->collect_pcpu_stat);
+
+  smsc_pktrace_unregister(pn);
 
   /* done */
   vfree(pn);
